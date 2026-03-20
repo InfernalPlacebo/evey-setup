@@ -1,220 +1,291 @@
 #!/bin/bash
-# Evey Stack Setup — get a hermes-agent stack running in minutes
-# Usage: curl -sf https://raw.githubusercontent.com/42-evey/evey-setup/main/setup.sh | bash
-set -e
+# Hermes Agent Stack Setup — Phase 1: Foundation
+# Prerequisites, directory scaffold, .env generation, config files
+#
+# Usage: bash setup.sh [install-dir]
+# Next:  bash setup-services.sh
+set -euo pipefail
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
 
-log() { echo -e "${GREEN}[evey-setup]${NC} $1"; }
-err() { echo -e "${RED}[evey-setup]${NC} $1" >&2; }
-ask() { echo -en "${CYAN}[evey-setup]${NC} $1: "; read -r REPLY; }
-
-INSTALL_DIR="${EVEY_DIR:-$HOME/evey-stack}"
-
+# ── Banner ──
 echo ""
-echo "  ╔══════════════════════════════════════╗"
-echo "  ║      Evey Stack Setup v1.0           ║"
-echo "  ║  hermes-agent + LiteLLM + plugins    ║"
-echo "  ╚══════════════════════════════════════╝"
-echo ""
+echo -e "${BOLD}"
+echo "  ============================================"
+echo "   Hermes Agent Stack Setup — Phase 1 of 4"
+echo "          Foundation & Configuration"
+echo "  ============================================"
+echo -e "${NC}"
 
-# ── Phase 1: Prerequisites ──
+# ══════════════════════════════════════════════
+# PREREQUISITES
+# ══════════════════════════════════════════════
+
 log "Checking prerequisites..."
 
-check_cmd() {
-    if ! command -v "$1" &>/dev/null; then
-        err "$1 not found. Please install it first."
-        return 1
-    fi
-    log "  ✓ $1 found"
-}
-
-check_cmd docker || exit 1
-check_cmd git || exit 1
-
-if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
-    err "Docker Compose not found. Install Docker Desktop or docker-compose-plugin."
+# Docker binary
+if ! command -v docker &>/dev/null; then
+    err "Docker not found. Install Docker first: https://docs.docker.com/get-docker/"
     exit 1
 fi
-log "  ✓ Docker Compose found"
 
-# Check Docker is running
+# Docker version >= 24
+DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "0")
+DOCKER_MAJOR=$(echo "$DOCKER_VERSION" | cut -d. -f1)
+if [ "$DOCKER_MAJOR" -lt 24 ] 2>/dev/null; then
+    err "Docker version $DOCKER_VERSION is too old. Need >= 24.0."
+    err "Update: https://docs.docker.com/engine/install/"
+    exit 1
+fi
+log "  Docker $DOCKER_VERSION"
+
+# Docker Compose v2
+if docker compose version &>/dev/null; then
+    COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+    log "  Docker Compose $COMPOSE_VERSION"
+elif docker-compose version &>/dev/null; then
+    err "docker-compose v1 detected. Need Docker Compose v2 (docker compose)."
+    err "Update: https://docs.docker.com/compose/install/"
+    exit 1
+else
+    err "Docker Compose not found. Install docker-compose-plugin."
+    exit 1
+fi
+
+# Docker daemon running
 if ! docker info &>/dev/null; then
-    err "Docker is not running. Please start Docker first."
+    err "Docker daemon is not running. Start Docker first."
     exit 1
 fi
-log "  ✓ Docker is running"
+log "  Docker daemon is running"
 
-# ── Phase 2: API Keys ──
-echo ""
-log "Setting up API keys..."
+# Git
+if ! command -v git &>/dev/null; then
+    err "git not found. Install git first."
+    exit 1
+fi
+log "  git found"
+
+# Disk space (need >= 5GB free)
+if command -v df &>/dev/null; then
+    FREE_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 5242880 ] 2>/dev/null; then
+        FREE_GB=$(( FREE_KB / 1048576 ))
+        err "Only ${FREE_GB}GB free disk space. Need at least 5GB."
+        exit 1
+    fi
+    if [ -n "$FREE_KB" ]; then
+        FREE_GB=$(( FREE_KB / 1048576 ))
+        log "  ${FREE_GB}GB free disk space"
+    fi
+fi
+
 echo ""
 
-ask "OpenRouter API key (get one at openrouter.ai/keys, or press Enter to skip)"
+# ══════════════════════════════════════════════
+# INSTALL DIRECTORY
+# ══════════════════════════════════════════════
+
+if [ -n "${1:-}" ]; then
+    INSTALL_DIR="$1"
+    log "Install directory: $INSTALL_DIR (from argument)"
+else
+    ask "Install directory" "$HOME/hermes-stack"
+    INSTALL_DIR="$REPLY"
+fi
+
+# Check for existing install
+if [ -d "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/.env" ]; then
+    warn "Existing installation found at $INSTALL_DIR"
+    ask "Overwrite configs? Data directories will be preserved (y/N)" "N"
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+        log "Aborted. Existing install preserved."
+        exit 0
+    fi
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════
+# API KEYS
+# ══════════════════════════════════════════════
+
+log "API key setup"
+echo ""
+
+ask "OpenRouter API key (get one free at openrouter.ai/keys)" ""
 OPENROUTER_KEY="$REPLY"
+if [ -z "$OPENROUTER_KEY" ]; then
+    warn "No OpenRouter key — brain model will not work until you add one to .env"
+fi
 
-ask "Telegram bot token (from @BotFather, or press Enter to skip)"
+echo ""
+ask "Telegram bot token (from @BotFather, or Enter to skip)" ""
 TELEGRAM_TOKEN="$REPLY"
 
-# Generate random keys for internal services
-LITELLM_KEY="sk-evey-$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p)"
-API_KEY="sk-api-$(openssl rand -hex 8 2>/dev/null || head -c 16 /dev/urandom | xxd -p)"
+ask "Discord bot token (from discord.com/developers/applications, or Enter to skip)" ""
+DISCORD_TOKEN="$REPLY"
 
-# ── Phase 3: Clone and Setup ──
 echo ""
-log "Setting up in $INSTALL_DIR..."
+
+# ══════════════════════════════════════════════
+# GENERATE SECRETS
+# ══════════════════════════════════════════════
+
+log "Generating secure keys..."
+
+LITELLM_KEY="sk-litellm-$(gen_key 16)"
+API_KEY="sk-api-$(gen_key 8)"
+# Pre-generate full-tier secrets (cheap, user may upgrade tier later)
+N8N_DB_PASS="$(gen_key 16)"
+LANGFUSE_DB_PASS="$(gen_key 16)"
+NEXTAUTH_SECRET="$(gen_key 32)"
+LANGFUSE_SALT="$(gen_key 16)"
+LANGFUSE_PUB="pk-lf-$(gen_key 12)"
+LANGFUSE_SEC="sk-lf-$(gen_key 16)"
+
+log "  Keys generated"
+
+echo ""
+
+# ══════════════════════════════════════════════
+# SCAFFOLD DIRECTORY STRUCTURE
+# ══════════════════════════════════════════════
+
+log "Scaffolding $INSTALL_DIR ..."
+
 mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
 
-# Clone hermes-agent
-if [ ! -d "src/hermes-agent" ]; then
+# Config directories
+mkdir -p "$INSTALL_DIR/config"
+mkdir -p "$INSTALL_DIR/config/mosquitto"
+mkdir -p "$INSTALL_DIR/config/searxng"
+
+# Data directories — hermes agent
+mkdir -p "$INSTALL_DIR/data/hermes/plugins"
+mkdir -p "$INSTALL_DIR/data/hermes/skills"
+mkdir -p "$INSTALL_DIR/data/hermes/cron"
+mkdir -p "$INSTALL_DIR/data/hermes/memories"
+mkdir -p "$INSTALL_DIR/data/hermes/workspace"
+
+# Data directories — claude bridge
+mkdir -p "$INSTALL_DIR/data/claude-bridge/inbox"
+mkdir -p "$INSTALL_DIR/data/claude-bridge/outbox"
+
+# Data directories — services (create all, even if tier is base — no harm)
+mkdir -p "$INSTALL_DIR/data/mqtt"
+mkdir -p "$INSTALL_DIR/data/qdrant"
+mkdir -p "$INSTALL_DIR/data/ntfy"
+mkdir -p "$INSTALL_DIR/data/n8n"
+mkdir -p "$INSTALL_DIR/data/uptimekuma"
+
+# Build & source directories
+mkdir -p "$INSTALL_DIR/dockerfiles"
+mkdir -p "$INSTALL_DIR/scripts"
+mkdir -p "$INSTALL_DIR/src"
+
+log "  Directory structure created"
+
+# ══════════════════════════════════════════════
+# CLONE HERMES-AGENT
+# ══════════════════════════════════════════════
+
+if [ ! -d "$INSTALL_DIR/src/hermes-agent" ]; then
     log "Cloning hermes-agent..."
-    mkdir -p src
-    git clone --depth 1 https://github.com/NousResearch/hermes-agent.git src/hermes-agent
+    git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$INSTALL_DIR/src/hermes-agent"
+else
+    log "  hermes-agent source already present"
 fi
 
-# Clone plugins
-if [ ! -d "plugins" ]; then
-    log "Cloning Evey plugins..."
-    git clone --depth 1 https://github.com/42-evey/hermes-plugins.git plugins
-fi
+# ══════════════════════════════════════════════
+# WRITE .env
+# ══════════════════════════════════════════════
 
-# ── Phase 4: Write configs ──
-log "Writing configuration..."
+log "Writing .env ..."
 
-# .env
-cat > .env << ENVEOF
-# Generated by evey-setup
+cat > "$INSTALL_DIR/.env" << ENVEOF
+# Hermes Stack — generated by setup.sh
+# Modify values as needed, then run: bash setup-services.sh
+
+# --- Core API Keys ---
 OPENROUTER_API_KEY=${OPENROUTER_KEY}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_TOKEN}
+DISCORD_BOT_TOKEN=${DISCORD_TOKEN}
+
+# --- Internal Service Keys (auto-generated) ---
 LITELLM_MASTER_KEY=${LITELLM_KEY}
 API_SERVER_KEY=${API_KEY}
+
+# --- n8n Database ---
+N8N_DB_PASSWORD=${N8N_DB_PASS}
+
+# --- Langfuse ---
+LANGFUSE_DB_PASSWORD=${LANGFUSE_DB_PASS}
+NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+LANGFUSE_SALT=${LANGFUSE_SALT}
+LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUB}
+LANGFUSE_SECRET_KEY=${LANGFUSE_SEC}
+
+# --- Timezone ---
 TZ=$(cat /etc/timezone 2>/dev/null || echo "UTC")
 ENVEOF
 
-# docker-compose.yml
-cat > docker-compose.yml << 'DCEOF'
-services:
-  hermes-agent:
-    build:
-      context: .
-      dockerfile: src/hermes-agent/Dockerfile
-    container_name: hermes-agent
-    volumes:
-      - ./data/hermes:/home/hermes/.hermes
-      - ./plugins:/home/hermes/.hermes/plugins/community
-    environment:
-      HERMES_PROVIDER: openrouter
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      OPENAI_BASE_URL: http://hermes-litellm:4000/v1
-      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
-      API_SERVER_ENABLED: "true"
-      API_SERVER_PORT: "8642"
-      API_SERVER_HOST: "0.0.0.0"
-      API_SERVER_KEY: ${API_SERVER_KEY}
-      TZ: ${TZ}
-    ports:
-      - "127.0.0.1:8642:8642"
-    depends_on:
-      hermes-litellm:
-        condition: service_healthy
-    networks:
-      - evey-net
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+chmod 600 "$INSTALL_DIR/.env"
+log "  .env written (permissions: 600)"
 
-  hermes-litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    container_name: hermes-litellm
-    volumes:
-      - ./config/litellm.yaml:/app/config.yaml
-    environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    ports:
-      - "127.0.0.1:4000:4000"
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - evey-net
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+# ══════════════════════════════════════════════
+# WRITE .gitignore
+# ══════════════════════════════════════════════
 
-  hermes-ollama:
-    image: ollama/ollama:latest
-    container_name: hermes-ollama
-    environment:
-      OLLAMA_KEEP_ALIVE: "30m"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    ports:
-      - "127.0.0.1:11434:11434"
-    networks:
-      - evey-net
-    restart: unless-stopped
+cat > "$INSTALL_DIR/.gitignore" << 'GIEOF'
+.env
+data/
+*.log
+__pycache__/
+.DS_Store
+GIEOF
 
-networks:
-  evey-net:
-    driver: bridge
-DCEOF
+log "  .gitignore written"
 
-# LiteLLM config with free models
-mkdir -p config
-cat > config/litellm.yaml << 'LMEOF'
+# ══════════════════════════════════════════════
+# WRITE CONFIG FILES
+# ══════════════════════════════════════════════
+
+log "Writing config files..."
+
+# ── LiteLLM config ──
+cat > "$INSTALL_DIR/config/litellm.yaml" << 'LMEOF'
 model_list:
+  # Free brain model via OpenRouter
   - model_name: brain
     litellm_params:
-      model: openai/xiaomi/mimo-v2-pro
+      model: openrouter/xiaomi/mimo-v2-pro
       api_key: os.environ/OPENROUTER_API_KEY
-      api_base: https://openrouter.ai/api/v1
-      extra_headers:
-        HTTP-Referer: "https://openclaw.ai"
-        X-OpenRouter-Title: "OpenClaw"
-      extra_body:
-        reasoning:
-          exclude: true
-      input_cost_per_token: 0
-      output_cost_per_token: 0
 
-  - model_name: nemotron-free
+  # Free fallback models
+  - model_name: fallback-large
     litellm_params:
-      model: openai/nvidia/nemotron-3-super-120b-a12b:free
+      model: openrouter/nvidia/llama-3.1-nemotron-ultra-253b:free
       api_key: os.environ/OPENROUTER_API_KEY
-      api_base: https://openrouter.ai/api/v1
 
-  - model_name: llama70b-free
+  - model_name: fallback-medium
     litellm_params:
-      model: openai/meta-llama/llama-3.3-70b-instruct:free
+      model: openrouter/meta-llama/llama-3.3-70b-instruct:free
       api_key: os.environ/OPENROUTER_API_KEY
-      api_base: https://openrouter.ai/api/v1
+
+  # Local model via Ollama
+  # Pull models: docker exec hermes-ollama ollama pull hermes3:8b
+  - model_name: local
+    litellm_params:
+      model: ollama/hermes3:8b
+      api_base: http://hermes-ollama:11434
 
 fallbacks:
-  - brain: [nemotron-free, llama70b-free]
+  - brain: [fallback-large, fallback-medium]
 
 litellm_settings:
-  max_budget: 5.0
+  max_budget: 10.0
   budget_duration: 1d
   cache: true
   cache_params:
@@ -225,49 +296,72 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 LMEOF
 
-# Create data dirs
-mkdir -p data/hermes
+log "  config/litellm.yaml"
 
-# ── Phase 5: Install plugins ──
-log "Installing plugins..."
-mkdir -p data/hermes/plugins
-cp -r plugins/evey-* data/hermes/plugins/ 2>/dev/null || true
-cp plugins/evey_utils.py data/hermes/plugins/ 2>/dev/null || true
+# ── Mosquitto config ──
+cat > "$INSTALL_DIR/config/mosquitto/mosquitto.conf" << 'MQEOF'
+listener 1883
+allow_anonymous true
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+MQEOF
 
-# ── Phase 6: Start ──
-echo ""
-log "Starting services..."
-docker compose up -d 2>&1 | tail -5
+log "  config/mosquitto/mosquitto.conf"
 
-echo ""
-log "Waiting for services to start..."
-sleep 15
+# ── SearXNG settings ──
+SEARXNG_SECRET="$(gen_key 16)"
+cat > "$INSTALL_DIR/config/searxng/settings.yml" << SXEOF
+use_default_settings: true
+server:
+  secret_key: "${SEARXNG_SECRET}"
+  limiter: false
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+SXEOF
 
-# Health check
-if curl -sf http://localhost:4000/health/liveliness > /dev/null 2>&1; then
-    log "✓ LiteLLM is healthy"
-else
-    err "LiteLLM not responding yet — may need more time"
+log "  config/searxng/settings.yml"
+
+# ── Init files ──
+if [ ! -f "$INSTALL_DIR/data/claude-bridge/channel.jsonl" ]; then
+    touch "$INSTALL_DIR/data/claude-bridge/channel.jsonl"
+fi
+if [ ! -f "$INSTALL_DIR/data/hermes/cron/jobs.json" ]; then
+    echo '[]' > "$INSTALL_DIR/data/hermes/cron/jobs.json"
 fi
 
-if curl -sf http://localhost:8642/health > /dev/null 2>&1; then
-    log "✓ Hermes agent is healthy"
-else
-    err "Hermes agent not responding yet — may need more time"
-fi
+# ══════════════════════════════════════════════
+# SAVE STATE FOR NEXT PHASES
+# ══════════════════════════════════════════════
+
+cat > "$SCRIPT_DIR/.setup-state" << STEOF
+INSTALL_DIR=${INSTALL_DIR}
+STEOF
+
+# ══════════════════════════════════════════════
+# DONE
+# ══════════════════════════════════════════════
 
 echo ""
-echo "  ╔══════════════════════════════════════╗"
-echo "  ║          Setup Complete!             ║"
-echo "  ╠══════════════════════════════════════╣"
-echo "  ║  Directory: $INSTALL_DIR"
-echo "  ║  Agent API: http://localhost:8642    ║"
-echo "  ║  LiteLLM:   http://localhost:4000    ║"
-echo "  ║  Brain:     MiMo-V2-Pro (FREE)      ║"
-echo "  ║                                      ║"
-echo "  ║  Plugins: 42-evey/hermes-plugins     ║"
-echo "  ║  Docs: github.com/42-evey            ║"
-echo "  ╚══════════════════════════════════════╝"
+echo -e "${BOLD}"
+echo "  ============================================"
+echo "        Phase 1 Complete — Foundation"
+echo "  ============================================"
+echo -e "${NC}"
+echo "  Install directory:  $INSTALL_DIR"
+echo "  OpenRouter key:     ${OPENROUTER_KEY:+set}${OPENROUTER_KEY:-NOT SET}"
+echo "  Telegram token:     ${TELEGRAM_TOKEN:+set}${TELEGRAM_TOKEN:-skipped}"
+echo "  Discord token:      ${DISCORD_TOKEN:+set}${DISCORD_TOKEN:-skipped}"
 echo ""
-log "Run 'docker compose logs -f hermes-agent' to see logs"
-log "Run 'hermes gateway setup' to configure Telegram"
+echo "  Created:"
+echo "    .env               API keys + generated secrets"
+echo "    config/             litellm.yaml, mosquitto, searxng"
+echo "    data/hermes/        plugins, skills, cron, memories"
+echo "    data/claude-bridge/ inbox, outbox"
+echo "    src/hermes-agent/   cloned from NousResearch"
+echo ""
+echo -e "  ${BOLD}Next: bash setup-services.sh${NC}"
+echo "  Pick a service tier and start Docker containers."
+echo ""
