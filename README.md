@@ -25,6 +25,14 @@ bash setup.sh
 
 The installer walks you through API keys, scaffolds the directory, writes all configs, and clones hermes-agent. Then pick a service tier and start containers.
 
+Or run all 4 phases at once: `bash install.sh`
+
+### Let Claude Code Do It
+
+Paste this into Claude Code and let it handle the whole setup:
+
+> Clone https://github.com/42-evey/evey-setup.git and run the setup. Read the CLAUDE.md first for context. Run each phase (setup.sh, setup-services.sh, install-plugins.sh, configure.sh) in order. Use the "full" service tier and install all plugins. After setup, verify all services are healthy with docker compose ps.
+
 ---
 
 ## What You Get
