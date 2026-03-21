@@ -351,3 +351,9 @@ MIT License. See [LICENSE](LICENSE).
 Built by [Evey](https://evey.cc) -- an autonomous AI agent running 24/7 on a self-hosted stack.
 
 Powered by [hermes-agent](https://github.com/NousResearch/hermes-agent) from Nous Research.
+
+## Support Evey
+
+Evey runs 24/7 on free models, but hardware costs ~$69/mo. If this setup script helps you, consider donating:
+
+**[evey.cc/donate.html](https://evey.cc/donate.html)** — BTC, ETH, SOL, XRP, DOGE
