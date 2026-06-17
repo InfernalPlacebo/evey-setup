@@ -23,18 +23,20 @@ Bootstrap a complete [hermes-agent](https://github.com/NousResearch/hermes-agent
 ```bash
 git clone https://github.com/42-evey/evey-setup.git
 cd evey-setup
-bash setup.sh
+bash setup.sh          # Phase 1:   scaffold, API keys, config files
+bash setup-native.sh   # Phase 1.5: install Ollama + hermes-agent natively
+bash setup-services.sh # Phase 2:   start Docker services (LiteLLM + tier)
+bash install-plugins.sh # Phase 3:  install plugins
+bash configure.sh      # Phase 4:   brain model, crons, personality
 ```
 
-The installer walks you through API keys, scaffolds the directory, writes all configs, and clones hermes-agent. Then pick a service tier and start containers.
-
-Or run all 4 phases at once: `bash install.sh`
+Or run all phases at once: `bash install.sh`
 
 ### Let Claude Code Do It
 
 Paste this into Claude Code and let it handle the whole setup:
 
-> Clone https://github.com/42-evey/evey-setup.git and run the setup. Read the CLAUDE.md first for context. Run each phase (setup.sh, setup-services.sh, install-plugins.sh, configure.sh) in order. Use the "full" service tier and install all plugins. After setup, verify all services are healthy with docker compose ps.
+> Clone https://github.com/42-evey/evey-setup.git and run the setup. Read the CLAUDE.md first for context. Run each phase in order: setup.sh, then setup-native.sh, then setup-services.sh (use "full" tier), then install-plugins.sh (install all plugins), then configure.sh. After setup, verify with: bash scripts/hermes-ctl.sh status && docker compose ps
 
 ---
 
@@ -61,45 +63,47 @@ Plus **29 community plugins** for autonomy, memory, quality validation, social f
 
 - **Docker** >= 24.0 with Docker Compose v2
 - **Git**
+- **curl**
 - **5GB+ free disk space**
 - **OpenRouter API key** (free tier works) -- get one at [openrouter.ai/keys](https://openrouter.ai/keys)
-- **NVIDIA GPU** (optional) -- Ollama falls back to CPU if no GPU detected
+- **Homebrew** (macOS only) -- required to install Ollama: [brew.sh](https://brew.sh)
+- **NVIDIA GPU** (optional, Linux) -- Ollama's installer detects it automatically; no Container Toolkit needed
+- **macOS** -- GPU acceleration (Metal) is automatic with native Ollama
 
 ---
 
 ## Architecture
 
+hermes-agent and Ollama run **natively on the host**. All other services run in Docker.
+
 ```
  User
-  |
   |  Telegram / CLI / Discord
   v
+hermes-agent  (native process, :8642)
+  |
+  |  http://localhost:4000/v1
+  v
 +----------------------------------------------------------+
-|                     hermes-agent                          |
-|  (autonomous AI agent -- goals, cron, plugins, skills)   |
-+------+----------+----------+----------+---------+--------+
-       |          |          |          |         |
-       v          v          v          v         v
-  +---------+ +--------+ +-------+ +------+ +--------+
-  | LiteLLM | | Ollama | | MQTT  | |SearX | | Qdrant |
-  |  proxy  | |  GPU   | | event | |  NG  | | vector |
-  | :4000   | | :11434 | | :1883 | |:8888 | | :6333  |
-  +---------+ +--------+ +-------+ +------+ +--------+
-       |
-       v
-  +--------------------------------------------------+
-  |            Model Providers (via LiteLLM)          |
-  |  OpenRouter (free)  |  Ollama (local)  |  + more  |
-  +--------------------------------------------------+
+|                    Docker (hermes-net)                    |
+|                                                           |
+|  +---------+  +-------+  +--------+  +------+  +------+ |
+|  | LiteLLM |  | MQTT  |  | SearXNG|  |Qdrant|  | ntfy | |
+|  |  :4000  |  | :1883 |  |  :8888 |  | :6333|  | :2586| |
+|  +---------+  +-------+  +--------+  +------+  +------+ |
+|       |                                                   |
+|       | host.docker.internal:11434                        |
++-------|--------------------------------------------------+
+        |
+        v
+  Ollama  (native process, :11434)
+  GPU: Metal (macOS) / NVIDIA (Linux, auto-detected)
 
-  Optional services (full tier):
-  +---------+ +----------+ +-------------+
-  |   n8n   | | Langfuse | | Uptime Kuma |
-  | :5678   | |  :3100   | |    :3001    |
-  +---------+ +----------+ +-------------+
-  |  ntfy   |
-  |  :2586  |
-  +---------+
+  Optional services (full tier, in Docker):
+  +---------+  +----------+  +-------------+
+  |   n8n   |  | Langfuse |  | Uptime Kuma |
+  | :5678   |  |  :3100   |  |    :3001    |
+  +---------+  +----------+  +-------------+
 ```
 
 All ports bind to `127.0.0.1` only (not exposed to the network).
@@ -110,19 +114,21 @@ All ports bind to `127.0.0.1` only (not exposed to the network).
 
 Three docker-compose templates are provided. Choose your tier at install time.
 
-### Base (3 services)
+hermes-agent and Ollama run natively on all tiers. The tier controls only the Docker services.
+
+### Base (1 Docker service)
 ```
-hermes-agent + LiteLLM + Ollama
+LiteLLM  +  hermes-agent (native)  +  Ollama (native)
 ```
 Minimum viable stack. Good for testing and getting started.
 
-### Services (7 services)
+### Services (5 Docker services)
 ```
 Base + MQTT + SearXNG + Qdrant + ntfy
 ```
 Adds real-time messaging, web search, vector memory, and push notifications.
 
-### Full (12+ services)
+### Full (10 Docker services)
 ```
 Services + n8n + Langfuse + Uptime Kuma + Postgres backends
 ```
@@ -173,6 +179,15 @@ Interactive wizard for brain model selection, compression threshold, cron job sc
 After setup, all configuration lives in your install directory:
 
 ```
+~/.hermes/                      # Agent data directory (HERMES_HOME)
+  .env                          # Agent env vars (written by setup-native.sh)
+  config.yaml                   # Agent behavior config
+  SOUL.md                       # Agent personality
+  plugins/                      # Installed plugins
+  skills/
+  cron/
+  logs/
+
 hermes-stack/
   .env                          # API keys and secrets (gitignored)
   docker-compose.yml            # Service definitions for your tier
@@ -181,9 +196,6 @@ hermes-stack/
     mosquitto/mosquitto.conf    # MQTT broker config
     searxng/settings.yml        # Search engine settings
   data/
-    hermes/                     # Agent data (plugins, skills, memories, cron)
-      config.yaml               # Agent behavior config
-      SOUL.md                   # Agent personality
     claude-bridge/              # Bridge for Claude Code integration
   src/
     hermes-agent/               # Agent source (cloned from NousResearch)
@@ -236,23 +248,28 @@ All plugins come from [42-evey/hermes-plugins](https://github.com/42-evey/hermes
 ## Common Commands
 
 ```bash
-# Service management
-docker compose up -d                    # start all services
-docker compose down                     # stop all services
-docker compose restart hermes-agent     # restart agent after config changes
+# Docker service management
+docker compose up -d                           # start Docker services
+docker compose down                            # stop Docker services
+docker compose logs -f hermes-litellm          # LiteLLM logs
 
-# Logs
-docker compose logs -f hermes-agent     # agent logs
-docker compose logs -f hermes-litellm   # model proxy logs
+# hermes-agent (native)
+bash scripts/hermes-ctl.sh status             # check agent + Ollama
+bash scripts/hermes-ctl.sh restart            # restart after config changes
+bash scripts/hermes-ctl.sh logs               # tail agent logs
 
 # Health checks
 curl http://localhost:4000/health/liveliness   # LiteLLM
 curl http://localhost:8642/health              # Agent API
-docker compose ps                              # all services
+curl http://localhost:11434/api/tags           # Ollama
+docker compose ps                             # Docker services only
 
-# Models
-docker exec hermes-ollama ollama pull hermes3:8b    # pull a local model
-docker exec hermes-ollama ollama list               # list local models
+# Models (Ollama runs natively -- no docker exec needed)
+ollama pull hermes3:8b                         # pull a local model
+ollama list                                    # list local models
+
+# Cron jobs
+hermes cron list                               # list scheduled jobs
 ```
 
 ---
@@ -265,9 +282,10 @@ docker exec hermes-ollama ollama list               # list local models
 - Verify config syntax: `python3 -c "import yaml; yaml.safe_load(open('config/litellm.yaml'))"`
 
 ### Ollama GPU errors
-- If no NVIDIA GPU: remove the `deploy:` block from `hermes-ollama` in `docker-compose.yml`
-- If GPU exists but fails: ensure [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) is installed
-- Ollama works on CPU too, just slower
+- **Linux**: Ollama's installer (`ollama.ai/install.sh`) detects NVIDIA automatically. If your GPU is not used, ensure NVIDIA drivers are installed *before* running `setup-native.sh`, then re-run it.
+- **macOS**: Metal acceleration is automatic -- no configuration needed.
+- Ollama works on CPU on both OSes, just slower.
+- No NVIDIA Container Toolkit is needed (Ollama runs natively, not in Docker).
 
 ### Port conflicts
 - The installer checks ports before starting. If a port is in use:
@@ -277,13 +295,15 @@ docker exec hermes-ollama ollama list               # list local models
 - Change the host port in `docker-compose.yml` (e.g., `"127.0.0.1:4001:4000"`)
 
 ### Agent not responding
-- Check if LiteLLM is healthy first (agent depends on it)
-- Run `docker compose restart hermes-agent`
-- Check `docker compose logs hermes-agent --tail 50`
+- Check if LiteLLM is healthy first: `curl http://localhost:4000/health/liveliness`
+- Restart the agent: `bash scripts/hermes-ctl.sh restart`
+- Check logs: `bash scripts/hermes-ctl.sh logs`
+- Check the service unit: Linux: `systemctl --user status hermes-agent`; macOS: `launchctl list com.nousresearch.hermes`
+- Verify `~/.hermes/.env` exists and has correct `LITELLM_BASE_URL=http://localhost:4000/v1`
 
 ### Plugins not loading
-- Plugins go in `data/hermes/plugins/`
-- Restart the agent after installing: `docker compose restart hermes-agent`
+- Plugins go in `~/.hermes/plugins/`
+- Restart the agent after installing: `bash scripts/hermes-ctl.sh restart`
 - Check plugin README files for any required config.yaml changes
 
 ### Existing installation
