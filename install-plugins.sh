@@ -257,7 +257,7 @@ log "Plugin installation complete."
 info "Plugin directory: ${PLUGIN_DIR}"
 info "Restart hermes-agent to load new plugins:"
 echo ""
-echo "  docker compose restart hermes-agent"
+echo "  bash ${INSTALL_DIR}/scripts/hermes-ctl.sh restart"
 echo ""
 
 # Show what to add to config.yaml platform_toolsets
