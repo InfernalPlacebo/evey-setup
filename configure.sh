@@ -400,13 +400,11 @@ cat > "$CRON_SCRIPT" << 'CRONHEADER'
 # Usage: bash scripts/setup-crons.sh
 set -euo pipefail
 
-CONTAINER="${HERMES_CONTAINER:-hermes-agent}"
-
-# Wait for agent to be ready
+# Wait for agent HTTP health endpoint
 echo "Waiting for hermes-agent to be ready..."
 TRIES=0
 while [ $TRIES -lt 12 ]; do
-    if docker exec "$CONTAINER" hermes cron list &>/dev/null; then
+    if curl -sf http://localhost:8642/health &>/dev/null; then
         break
     fi
     TRIES=$(( TRIES + 1 ))
@@ -414,7 +412,7 @@ while [ $TRIES -lt 12 ]; do
 done
 
 if [ $TRIES -eq 12 ]; then
-    echo "ERROR: hermes-agent not responding after 60s"
+    echo "ERROR: hermes-agent not responding on :8642 after 60s"
     exit 1
 fi
 
@@ -425,7 +423,7 @@ if [ "$CRON_HEARTBEAT" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Heartbeat (every 2h)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Heartbeat" \
     --schedule "0 */2 * * *" \
     --prompt "Run a quick health check. Report any DOWN services. Call watchdog_heartbeat with activity='healthcheck completed'." \
@@ -437,7 +435,7 @@ if [ "$CRON_GOALS" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Goal Review (every 6h)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Goal Review" \
     --schedule "0 */6 * * *" \
     --prompt "Review your goals. Update progress, complete finished ones, add new ideas." \
@@ -449,7 +447,7 @@ if [ "$CRON_MORNING" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Morning Briefing (9am daily)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Morning Briefing" \
     --schedule "0 9 * * *" \
     --prompt "Morning briefing. Check goals, review overnight events, then send a concise plan with 2-3 priorities. Keep it under 150 words." \
@@ -462,7 +460,7 @@ if [ "$CRON_DAILY" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Daily Report (9pm daily)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Daily Report" \
     --schedule "0 21 * * *" \
     --prompt "Compile daily metrics: tasks completed, delegation results, costs, errors. Send a concise end-of-day digest. Keep under 200 words." \
@@ -475,7 +473,7 @@ if [ "$CRON_RESEARCH" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Research (every 12h)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Research" \
     --schedule "0 */12 * * *" \
     --prompt "Pick one topic from your goals or recent AI developments. Find 3-5 sources, extract key findings, write a research note. Time-box: 10 minutes. Depth over breadth." \
@@ -487,7 +485,7 @@ if [ "$CRON_SELFIMPROVE" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Self-Improve (3am daily)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Self-Improve" \
     --schedule "0 3 * * *" \
     --prompt "Self-improvement cycle. Review recent sessions for failures and errors. For each failure, reflect on what went wrong. Check and update goals. Be honest about mistakes." \
@@ -499,7 +497,7 @@ if [ "$CRON_CONTEXTSYNC" -eq 1 ]; then
     cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo "  Creating: Context Sync (every 30min)"
-docker exec "$CONTAINER" hermes cron add \
+hermes cron add \
     --name "Context Sync" \
     --schedule "*/30 * * * *" \
     --prompt "Lightweight context sync. Check for new messages, events, and errors. Log findings. Do NOT do heavy processing — scan and log only." \
@@ -511,7 +509,7 @@ cat >> "$CRON_SCRIPT" << 'EOF'
 
 echo ""
 echo "Cron setup complete. Verify with:"
-echo "  docker exec hermes-agent hermes cron list"
+echo "  hermes cron list"
 EOF
 
 chmod +x "$CRON_SCRIPT"
@@ -520,23 +518,21 @@ log "  Generated scripts/setup-crons.sh ($CRON_COUNT jobs)"
 # ── Generate Telegram pairing script ─────────────────────────
 if [ "${SETUP_TELEGRAM:-0}" -eq 1 ]; then
     TELEGRAM_SCRIPT="$INSTALL_DIR/scripts/pair-telegram.sh"
-    cat > "$TELEGRAM_SCRIPT" << TGEOF
+    cat > "$TELEGRAM_SCRIPT" << 'TGEOF'
 #!/bin/bash
 # Telegram pairing — run after hermes-agent is healthy
 set -euo pipefail
 
-CONTAINER="\${HERMES_CONTAINER:-hermes-agent}"
-
 echo "Setting up Telegram gateway..."
-docker exec "\$CONTAINER" hermes gateway setup
+hermes gateway setup
 
 echo ""
 echo "Pairing with Telegram..."
-docker exec -it "\$CONTAINER" hermes pairing request
+hermes pairing request
 
 echo ""
 echo "To verify pairing:"
-echo "  docker exec \$CONTAINER hermes pairing list"
+echo "  hermes pairing list"
 TGEOF
 
     # Add allowed users to .env if provided
@@ -578,7 +574,7 @@ if [ "$CHANGED_HERMES" -eq 1 ] || [ "$CHANGED_LITELLM" -eq 1 ]; then
     if [ "$CHANGED_LITELLM" -eq 1 ]; then
         echo "    docker compose up -d hermes-litellm --force-recreate"
     fi
-    echo "    docker compose restart hermes-agent"
+    echo "    bash $INSTALL_DIR/scripts/hermes-ctl.sh restart"
     echo ""
 fi
 
