@@ -22,22 +22,27 @@ if [ ! -f "$SCRIPT_DIR/setup.sh" ]; then
     cd "$SCRIPT_DIR"
 fi
 
-echo "[install] Phase 1/4 — Foundation (scaffold, .env, clone hermes)"
+echo "[install] Phase 1/5 — Foundation (scaffold, .env, clone hermes)"
 echo "────────────────────────────────────────────"
 bash "$SCRIPT_DIR/setup.sh" "$@"
 
 echo ""
-echo "[install] Phase 2/4 — Services (Docker containers)"
+echo "[install] Phase 1.5/5 — Native Services (Ollama + hermes-agent)"
+echo "────────────────────────────────────────────"
+bash "$SCRIPT_DIR/setup-native.sh"
+
+echo ""
+echo "[install] Phase 2/5 — Services (Docker containers)"
 echo "────────────────────────────────────────────"
 bash "$SCRIPT_DIR/setup-services.sh"
 
 echo ""
-echo "[install] Phase 3/4 — Plugins"
+echo "[install] Phase 3/5 — Plugins"
 echo "────────────────────────────────────────────"
 bash "$SCRIPT_DIR/install-plugins.sh"
 
 echo ""
-echo "[install] Phase 4/4 — Configuration"
+echo "[install] Phase 4/5 — Configuration"
 echo "────────────────────────────────────────────"
 bash "$SCRIPT_DIR/configure.sh"
 
