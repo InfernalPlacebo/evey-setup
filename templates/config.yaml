@@ -187,7 +187,7 @@ quick_commands:
   services:
     type: exec
     command: echo 'LiteLLM:' && curl -sf http://hermes-litellm:4000/health/liveliness
-      && echo ' OK' || echo ' DOWN'; echo 'Ollama:' && curl -sf http://hermes-ollama:11434/api/tags
+      && echo ' OK' || echo ' DOWN'; echo 'Ollama:' && curl -sf http://localhost:11434/api/tags
       > /dev/null && echo ' OK' || echo ' DOWN'
   models:
     type: exec
@@ -196,7 +196,7 @@ quick_commands:
       x[''id''])]"'
   gpu:
     type: exec
-    command: curl -s http://hermes-ollama:11434/api/tags | python3 -c "import json,sys;
+    command: curl -s http://localhost:11434/api/tags | python3 -c "import json,sys;
       [print(f'  {m[\"name\"]}') for m in json.load(sys.stdin).get('models',[])]"
   memory:
     type: exec

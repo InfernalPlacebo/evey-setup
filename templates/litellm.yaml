@@ -92,18 +92,18 @@ model_list:
   #     api_key: os.environ/OPENROUTER_API_KEY
   #     api_base: https://openrouter.ai/api/v1
 
-  # ── LOCAL MODELS (Ollama — requires GPU, $0 cost) ────────────
+  # ── LOCAL MODELS (Ollama — runs natively on host, $0 cost) ──
   - model_name: hermes3-8b
     litellm_params:
       model: ollama/hermes3:8b
-      api_base: http://hermes-ollama:11434
+      api_base: http://host.docker.internal:11434
       input_cost_per_token: 0
       output_cost_per_token: 0
 
   - model_name: qwen35-4b
     litellm_params:
       model: ollama/qwen3.5:4b
-      api_base: http://hermes-ollama:11434
+      api_base: http://host.docker.internal:11434
       input_cost_per_token: 0
       output_cost_per_token: 0
 

@@ -274,12 +274,12 @@ model_list:
       model: openrouter/meta-llama/llama-3.3-70b-instruct:free
       api_key: os.environ/OPENROUTER_API_KEY
 
-  # Local model via Ollama
-  # Pull models: docker exec hermes-ollama ollama pull hermes3:8b
+  # Local model via Ollama (runs natively on host)
+  # Pull models: ollama pull hermes3:8b
   - model_name: local
     litellm_params:
       model: ollama/hermes3:8b
-      api_base: http://hermes-ollama:11434
+      api_base: http://host.docker.internal:11434
 
 fallbacks:
   - brain: [fallback-large, fallback-medium]
