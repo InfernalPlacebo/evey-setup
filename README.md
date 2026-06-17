@@ -138,7 +138,7 @@ Complete production stack with workflow automation, cost tracking, and monitorin
 
 ## Step-by-Step Usage
 
-The setup is split into 4 phases. Each phase is a separate script that can be run independently.
+The setup is split into 5 phases. Each phase is a separate script that can be run independently.
 
 ### Phase 1: Foundation
 
@@ -146,7 +146,15 @@ The setup is split into 4 phases. Each phase is a separate script that can be ru
 bash setup.sh
 ```
 
-Checks prerequisites (Docker >= 24, Compose v2, git, 5GB disk), asks for API keys (OpenRouter, Telegram, Discord), generates secure internal secrets, scaffolds the directory structure, clones hermes-agent, and writes all config files.
+Checks prerequisites (Docker >= 24, Compose v2, git, curl, 5GB disk), asks for API keys (OpenRouter, Telegram, Discord), generates secure internal secrets, scaffolds the directory structure, clones hermes-agent, and writes all config files.
+
+### Phase 1.5: Native Services
+
+```bash
+bash setup-native.sh
+```
+
+Installs Ollama and hermes-agent as native host processes. On Linux: Ollama via `ollama.ai/install.sh` (handles NVIDIA detection), hermes-agent via official installer + systemd user unit. On macOS: Ollama via Homebrew, hermes-agent via official installer + launchd plist. Writes `~/.hermes/.env` with all required env vars.
 
 ### Phase 2: Service Deployment
 
@@ -154,7 +162,7 @@ Checks prerequisites (Docker >= 24, Compose v2, git, 5GB disk), asks for API key
 bash setup-services.sh
 ```
 
-Choose a stack tier (base/services/full), check port availability, detect GPU, copy the matching docker-compose template, and start containers. Waits for services to become healthy.
+Choose a stack tier (base/services/full), check port availability, copy the matching docker-compose template, and start containers. Waits for services to become healthy.
 
 ### Phase 3: Plugins
 
@@ -342,16 +350,17 @@ Every service port binds to `127.0.0.1`, meaning traffic never leaves your machi
 
 ```
 evey-setup/
-  setup.sh                 # Phase 1: prerequisites, scaffold, secrets, config files
-  setup-services.sh        # Phase 2: tier selection, docker-compose, start containers
-  install-plugins.sh       # Phase 3: interactive plugin installer by category
-  configure.sh             # Phase 4: brain model, compression, cron, personality wizard
+  setup.sh                 # Phase 1:   prerequisites, scaffold, secrets, config files
+  setup-native.sh          # Phase 1.5: native Ollama + hermes-agent install
+  setup-services.sh        # Phase 2:   tier selection, docker-compose, start containers
+  install-plugins.sh       # Phase 3:   interactive plugin installer by category
+  configure.sh             # Phase 4:   brain model, compression, cron, personality wizard
   lib/
     common.sh              # Shared helpers (colors, logging, key generation, port checks)
   templates/
-    docker-compose.base.yml       # 3 services (agent + LiteLLM + Ollama)
-    docker-compose.services.yml   # 7 services (+ MQTT, SearXNG, Qdrant, ntfy)
-    docker-compose.full.yml       # 12+ services (+ n8n, Langfuse, Uptime Kuma)
+    docker-compose.base.yml       # 1 Docker service (LiteLLM only)
+    docker-compose.services.yml   # 5 Docker services (+ MQTT, SearXNG, Qdrant, ntfy)
+    docker-compose.full.yml       # 10 Docker services (+ n8n, Langfuse, Uptime Kuma)
     litellm.yaml                  # Full model routing config (8 free + 2 local models)
     config.yaml                   # Agent configuration template
     soul.md                       # Agent personality template
