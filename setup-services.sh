@@ -44,13 +44,13 @@ if [ -n "${1:-}" ]; then
 else
     log "Choose your stack tier:"
     echo ""
-    echo "  1) base     — hermes-agent + LiteLLM + Ollama (3 services)"
+    echo "  1) base     — LiteLLM only in Docker (hermes-agent + Ollama run natively)"
     echo "                Minimum viable stack. Good for testing."
     echo ""
-    echo "  2) services — base + MQTT, SearXNG, Qdrant, ntfy (7 services)"
+    echo "  2) services — base + MQTT, SearXNG, Qdrant, ntfy (5 Docker services)"
     echo "                Adds search, vector memory, notifications."
     echo ""
-    echo "  3) full     — services + n8n, Langfuse, Uptime Kuma (12+ services)"
+    echo "  3) full     — services + n8n, Langfuse, Uptime Kuma (10 Docker services)"
     echo "                Complete stack with workflows, cost tracking, monitoring."
     echo ""
     ask "Stack tier (1/2/3)" "1"
@@ -72,9 +72,7 @@ echo ""
 log "Checking port availability..."
 
 PORT_CONFLICT=0
-check_port 4000 "LiteLLM"    || PORT_CONFLICT=1
-check_port 8642 "Hermes API"  || PORT_CONFLICT=1
-check_port 11434 "Ollama"     || PORT_CONFLICT=1
+check_port 4000 "LiteLLM" || PORT_CONFLICT=1
 
 if [ "$TIER" = "services" ] || [ "$TIER" = "full" ]; then
     check_port 1883 "MQTT"    || PORT_CONFLICT=1
@@ -125,36 +123,6 @@ else
 fi
 
 # ══════════════════════════════════════════════
-# GPU DETECTION
-# ══════════════════════════════════════════════
-
-HAS_GPU=0
-if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    log "GPU detected: $GPU_NAME"
-    HAS_GPU=1
-else
-    warn "No NVIDIA GPU detected. Ollama will run on CPU (slower)."
-    # Remove GPU deploy block so compose doesn't fail
-    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-        # Use python for reliable multi-line YAML editing, fall back to sed
-        if command -v python3 &>/dev/null; then
-            python3 -c "
-import re, sys
-with open('$INSTALL_DIR/docker-compose.yml', 'r') as f:
-    content = f.read()
-# Remove deploy blocks with GPU reservations
-content = re.sub(r'\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: \[gpu\]\n', '\n', content)
-with open('$INSTALL_DIR/docker-compose.yml', 'w') as f:
-    f.write(content)
-" 2>/dev/null && log "  Removed GPU requirement from docker-compose.yml" || true
-        fi
-    fi
-fi
-
-echo ""
-
-# ══════════════════════════════════════════════
 # CONFIRM & START
 # ══════════════════════════════════════════════
 
@@ -162,12 +130,13 @@ echo -e "${BOLD}  Service Summary${NC}"
 echo "  -------------------------------------------"
 echo "  Tier:       $TIER"
 echo "  Compose:    $INSTALL_DIR/docker-compose.yml"
-echo "  GPU:        $([ $HAS_GPU -eq 1 ] && echo "yes" || echo "no (CPU mode)")"
 echo ""
-echo "  Services:"
-echo "    - hermes-agent     (port 8642)"
+echo "  Native services (from setup-native.sh):"
+echo "    - hermes-agent     (port 8642)  [native]"
+echo "    - ollama           (port 11434) [native]"
+echo ""
+echo "  Docker services:"
 echo "    - hermes-litellm   (port 4000)"
-echo "    - hermes-ollama    (port 11434)"
 if [ "$TIER" = "services" ] || [ "$TIER" = "full" ]; then
     echo "    - hermes-mqtt      (port 1883)"
     echo "    - hermes-searxng   (port 8888)"
@@ -279,9 +248,11 @@ fi
 echo ""
 echo "  Useful commands:"
 echo "    cd $INSTALL_DIR"
-echo "    docker compose logs -f hermes-agent    # watch agent logs"
-echo "    docker compose ps                      # service status"
-echo "    docker exec hermes-ollama ollama pull hermes3:8b  # pull local model"
+echo "    docker compose logs -f hermes-litellm  # watch LiteLLM logs"
+echo "    docker compose ps                      # Docker service status"
+echo "    bash scripts/hermes-ctl.sh status      # hermes-agent status"
+echo "    bash $INSTALL_DIR/scripts/hermes-ctl.sh logs        # watch agent logs"
+echo "    ollama pull hermes3:8b                 # pull local model"
 echo ""
 echo -e "  ${BOLD}Next: bash install-plugins.sh${NC}"
 echo "  Add autonomy plugins, skills, and hooks."
