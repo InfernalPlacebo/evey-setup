@@ -1,6 +1,11 @@
 #!/bin/bash
 # Hermes Agent Stack Setup — Phase 1.5: Native Services
-# Installs Ollama and hermes-agent as native host processes (Linux + macOS)
+# Installs Ollama and hermes-agent natively on the host.
+# Ollama:        Linux via ollama.ai/install.sh (systemd + NVIDIA auto-detect)
+#                macOS via Homebrew (launchd via brew services)
+# hermes-agent:  Both OSes via hermes-agent.nousresearch.com/install.sh
+#                Linux: hermes gateway install (systemd user unit)
+#                macOS: launchd plist at ~/Library/LaunchAgents/
 #
 # Usage: bash setup-native.sh
 # Prev:  bash setup.sh
@@ -10,335 +15,350 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
-# ── Banner ──────────────────────────────────────────────────────
+# ── Banner ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}"
 echo "  ============================================"
-echo "  Hermes Agent Stack Setup — Phase 1.5 of 4"
-echo "          Native Service Install"
+echo "   Hermes Agent Stack Setup — Phase 1.5 of 4"
+echo "         Native Services Installation"
 echo "  ============================================"
 echo -e "${NC}"
 
-# ══════════════════════════════════════════════
-# DETECT OS
-# ══════════════════════════════════════════════
-
+# ── OS detection ────────────────────────────────────────────────────────────
 OS="$(uname -s)"
-case "$OS" in
-    Linux)  PLATFORM="linux" ;;
-    Darwin) PLATFORM="macos" ;;
-    *)
-        err "Unsupported operating system: $OS"
-        err "setup-native.sh supports Linux and macOS only."
-        exit 1
-        ;;
-esac
+if [ "$OS" != "Linux" ] && [ "$OS" != "Darwin" ]; then
+    err "Unsupported OS: $OS (supported: Linux, Darwin/macOS)"
+    exit 1
+fi
+log "OS: $OS"
 
-log "Platform: $PLATFORM"
-echo ""
-
-# ══════════════════════════════════════════════
-# RESOLVE INSTALL DIR
-# ══════════════════════════════════════════════
-
+# ── Resolve install dir and load stack .env ──────────────────────────────────
 INSTALL_DIR="$(resolve_install_dir)"
-
-if [ ! -d "$INSTALL_DIR" ] || [ ! -f "$INSTALL_DIR/.env" ]; then
-    err "No installation found at $INSTALL_DIR"
-    err "Run setup.sh first to create the foundation."
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+    err "Stack .env not found at $INSTALL_DIR/.env"
+    err "Run setup.sh first."
     exit 1
 fi
 
 log "Install directory: $INSTALL_DIR"
 
-# Read tier from .setup-state (written by setup-services.sh, defaults to base)
-TIER="base"
-if [ -f "$SCRIPT_DIR/.setup-state" ]; then
-    STATE_TIER="$(grep '^TIER=' "$SCRIPT_DIR/.setup-state" 2>/dev/null | cut -d= -f2-)"
-    [ -n "$STATE_TIER" ] && TIER="$STATE_TIER"
-fi
-[ -n "${1:-}" ] && TIER="$1"
-
-log "Tier: $TIER"
-echo ""
-
-# ══════════════════════════════════════════════
-# SOURCE INSTALL_DIR/.env (for secrets)
-# ══════════════════════════════════════════════
-
+# Load stack .env into current shell so variables are available for heredoc expansion
+set -a
 # shellcheck disable=SC1090
-set -a; source "$INSTALL_DIR/.env"; set +a
+source "$INSTALL_DIR/.env"
+set +a
 
-HERMES_HOME_DIR="$HOME/.hermes"
+# ── hermes paths ─────────────────────────────────────────────────────────────
+HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_BIN="$HERMES_HOME_DIR/bin/hermes"
 
-# ══════════════════════════════════════════════
-# INSTALL OLLAMA
-# ══════════════════════════════════════════════
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════
+# OLLAMA
+# ════════════════════════════════════════════════════════════════════════════
 
 log "Installing Ollama..."
 
 if command -v ollama &>/dev/null; then
-    OLLAMA_VER="$(ollama --version 2>/dev/null | head -1 || echo "installed")"
-    log "  Ollama already installed: $OLLAMA_VER"
+    log "  Ollama already installed: $(ollama --version 2>/dev/null | head -1 || echo 'version unknown')"
 else
-    if [ "$PLATFORM" = "linux" ]; then
-        log "  Downloading Ollama installer..."
+    if [ "$OS" = "Linux" ]; then
+        log "  Running Ollama Linux installer (may require sudo)..."
         curl -fsSL https://ollama.ai/install.sh | sh
-        log "  Ollama installed"
-    elif [ "$PLATFORM" = "macos" ]; then
-        log "  Installing Ollama (macOS)..."
-        if command -v brew &>/dev/null; then
-            brew install ollama
-        else
-            warn "  Homebrew not found — downloading Ollama app..."
-            OLLAMA_TMP="$(mktemp -d)"
-            curl -fsSL "https://ollama.ai/download/Ollama-darwin.zip" \
-                -o "$OLLAMA_TMP/ollama.zip"
-            unzip -q "$OLLAMA_TMP/ollama.zip" -d "$OLLAMA_TMP"
-            sudo mkdir -p /usr/local/bin
-            sudo cp "$OLLAMA_TMP/Ollama.app/Contents/Resources/ollama" \
-                /usr/local/bin/ollama
-            rm -rf "$OLLAMA_TMP"
+    elif [ "$OS" = "Darwin" ]; then
+        if ! command -v brew &>/dev/null; then
+            err "Homebrew is required on macOS to install Ollama."
+            err "Install it first: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            exit 1
         fi
-        log "  Ollama installed"
+        brew install ollama
     fi
+fi
+
+log "Starting Ollama service..."
+if [ "$OS" = "Linux" ]; then
+    if command -v systemctl &>/dev/null; then
+        sudo systemctl enable ollama 2>/dev/null || true
+        sudo systemctl start ollama  2>/dev/null || true
+    fi
+elif [ "$OS" = "Darwin" ]; then
+    brew services start ollama 2>/dev/null || true
+fi
+
+log "Waiting for Ollama to be ready (up to 30s)..."
+TRIES=0
+OLLAMA_UP=0
+while [ $TRIES -lt 6 ]; do
+    if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+        OLLAMA_UP=1
+        break
+    fi
+    TRIES=$(( TRIES + 1 ))
+    sleep 5
+done
+
+if [ "$OLLAMA_UP" -eq 1 ]; then
+    log "  Ollama is up: http://localhost:11434"
+else
+    warn "  Ollama did not respond in 30s — it may still be starting. Continuing."
 fi
 
 echo ""
 
-# ══════════════════════════════════════════════
-# INSTALL HERMES-AGENT
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# HERMES-AGENT BINARY
+# ════════════════════════════════════════════════════════════════════════════
 
 log "Installing hermes-agent..."
 
 if [ -f "$HERMES_BIN" ]; then
     log "  hermes-agent already installed at $HERMES_BIN"
-elif [ -d "$INSTALL_DIR/src/hermes-agent" ]; then
-    log "  Installing from $INSTALL_DIR/src/hermes-agent ..."
-
-    PIP_CMD=""
-    if command -v pip3 &>/dev/null; then
-        PIP_CMD="pip3"
-    elif command -v pip &>/dev/null; then
-        PIP_CMD="pip"
-    else
-        err "pip not found. Install Python 3 and pip first."
-        exit 1
-    fi
-
-    mkdir -p "$HERMES_HOME_DIR/bin"
-    "$PIP_CMD" install --prefix="$HERMES_HOME_DIR" \
-        -e "$INSTALL_DIR/src/hermes-agent" > /dev/null 2>&1
-    log "  hermes-agent installed to $HERMES_HOME_DIR"
 else
-    err "hermes-agent source not found at $INSTALL_DIR/src/hermes-agent"
-    err "Run setup.sh first to clone hermes-agent."
+    log "  Running hermes-agent installer..."
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup
+    # Installer may add ~/.hermes/bin to PATH only after shell reload.
+    # Use full path for all subsequent hermes calls.
+    export PATH="$HERMES_HOME_DIR/bin:$PATH"
+fi
+
+if [ ! -f "$HERMES_BIN" ]; then
+    err "hermes binary not found at $HERMES_BIN after installation."
+    err "Check the installer output above for errors."
     exit 1
 fi
 
+log "  hermes binary: $HERMES_BIN"
+
 echo ""
 
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # WRITE ~/.hermes/.env
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 
-log "Writing $HERMES_HOME_DIR/.env ..."
-mkdir -p "$HERMES_HOME_DIR"
+log "Writing $HERMES_HOME_DIR/.env..."
+mkdir -p "$HERMES_HOME_DIR/logs"
 
-cat > "$HERMES_HOME_DIR/.env" << HERMESENV
-# Hermes Agent — generated by setup-native.sh
-# Secrets sourced from $INSTALL_DIR/.env
-
-# --- LiteLLM (Docker) ---
+cat > "$HERMES_HOME_DIR/.env" << HENVEOF
+# Written by evey-setup setup-native.sh
+# Re-run setup-native.sh to regenerate from $INSTALL_DIR/.env
+# hermes-agent connects to LiteLLM on localhost (not the Docker network name)
+HERMES_PROVIDER=litellm
 LITELLM_BASE_URL=http://localhost:4000/v1
-LITELLM_API_KEY=${LITELLM_MASTER_KEY:-}
-
-# --- Agent API ---
-HERMES_API_KEY=${API_SERVER_KEY:-}
-HERMESENV
-
-if [ "$TIER" = "services" ] || [ "$TIER" = "full" ]; then
-    cat >> "$HERMES_HOME_DIR/.env" << SVCENV
-
-# --- MQTT (localhost) ---
+LITELLM_KEY=${LITELLM_MASTER_KEY:-}
+OPENAI_BASE_URL=http://localhost:4000/v1
+OPENAI_API_KEY=${LITELLM_MASTER_KEY:-}
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+API_SERVER_HOST=0.0.0.0
+API_SERVER_KEY=${API_SERVER_KEY:-}
+SESSION_IDLE_MINUTES=240
+SESSION_RESET_HOUR=3
+TZ=${TZ:-UTC}
+# Native Ollama settings
+OLLAMA_KEEP_ALIVE=30m
+OLLAMA_MAX_LOADED_MODELS=2
+OLLAMA_NUM_PARALLEL=2
+OLLAMA_FLASH_ATTENTION=1
+# Services-tier and above (Docker ports exposed on localhost)
 MQTT_HOST=localhost
 MQTT_PORT=1883
-
-# --- SearXNG (localhost) ---
 SEARXNG_URL=http://localhost:8888
-
-# --- Qdrant (localhost) ---
 QDRANT_URL=http://localhost:6333
-SVCENV
-fi
-
-if [ "$TIER" = "full" ]; then
-    cat >> "$HERMES_HOME_DIR/.env" << FULLENV
-
-# --- Langfuse (localhost) ---
+# Full-tier only
 LANGFUSE_HOST=http://localhost:3100
 LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
 LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-FULLENV
-fi
+HENVEOF
 
 chmod 600 "$HERMES_HOME_DIR/.env"
-log "  $HERMES_HOME_DIR/.env written (permissions: 600)"
+log "  Written and chmod 600"
+
 echo ""
 
-# ══════════════════════════════════════════════
-# REGISTER SERVICE
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# REGISTER HERMES-AGENT SERVICE
+# ════════════════════════════════════════════════════════════════════════════
 
-if [ "$PLATFORM" = "linux" ]; then
-    # ── Linux: systemd user service ──────────────────────────────
-    log "Registering hermes-agent systemd service..."
+log "Registering hermes-agent service..."
 
-    if [ -f "$HERMES_BIN" ]; then
-        "$HERMES_BIN" gateway install 2>/dev/null || true
+if [ "$OS" = "Linux" ]; then
+    # hermes gateway install creates a systemd user unit and starts it.
+    if "$HERMES_BIN" gateway install 2>/dev/null; then
+        log "  systemd user unit installed"
     else
-        warn "  hermes binary not found at $HERMES_BIN — skipping gateway install"
+        warn "  hermes gateway install failed — check systemd --user availability"
+        warn "  You can start manually: $HERMES_BIN gateway"
     fi
 
-    SYSTEMD_UNIT="$HOME/.config/systemd/user/hermes-gateway.service"
-
-    if [ -f "$SYSTEMD_UNIT" ]; then
-        if ! grep -q "^EnvironmentFile=" "$SYSTEMD_UNIT"; then
-            sed -i '/^\[Service\]/a EnvironmentFile=%h/.hermes/.env' "$SYSTEMD_UNIT"
-            log "  Injected EnvironmentFile into $SYSTEMD_UNIT"
-        else
-            log "  EnvironmentFile already present in $SYSTEMD_UNIT"
-        fi
-
+    # Inject EnvironmentFile so systemd reads our .env on start.
+    UNIT_FILE="$HOME/.config/systemd/user/hermes-agent.service"
+    if [ -f "$UNIT_FILE" ] && ! grep -q "EnvironmentFile" "$UNIT_FILE"; then
+        sed -i "/^\[Service\]/a EnvironmentFile=$HERMES_HOME_DIR/.env" "$UNIT_FILE"
         systemctl --user daemon-reload
-        systemctl --user enable --now hermes-gateway
-        log "  hermes-gateway service enabled and started"
-    else
-        warn "  Unit file not found at $SYSTEMD_UNIT"
-        warn "  Run manually: $HERMES_BIN gateway install"
+        systemctl --user restart hermes-agent 2>/dev/null || true
+        log "  EnvironmentFile=$HERMES_HOME_DIR/.env added to unit"
     fi
 
-elif [ "$PLATFORM" = "macos" ]; then
-    # ── macOS: LaunchAgent plist ─────────────────────────────────
-    log "Registering hermes-agent LaunchAgent..."
-
+elif [ "$OS" = "Darwin" ]; then
     PLIST_DIR="$HOME/Library/LaunchAgents"
-    PLIST_FILE="$PLIST_DIR/ai.hermes.gateway.plist"
-    LOG_DIR="$HERMES_HOME_DIR/logs"
+    PLIST_FILE="$PLIST_DIR/com.nousresearch.hermes.plist"
+    mkdir -p "$PLIST_DIR"
+    mkdir -p "$HERMES_HOME_DIR/logs"
 
-    mkdir -p "$PLIST_DIR" "$LOG_DIR"
+    # Unload any existing plist before overwriting
+    if launchctl list com.nousresearch.hermes > /dev/null 2>&1; then
+        launchctl unload "$PLIST_FILE" 2>/dev/null || true
+        log "  Unloaded existing LaunchAgent"
+    fi
 
+    # Write plist. Shell wrapper sources ~/.hermes/.env before exec so all
+    # env vars are available to the hermes process.
     cat > "$PLIST_FILE" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>ai.hermes.gateway</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>set -a; . "${HERMES_HOME_DIR}/.env"; set +a; exec "${HERMES_BIN}" gateway</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${LOG_DIR}/gateway.log</string>
-    <key>StandardErrorPath</key>
-    <string>${LOG_DIR}/gateway.error.log</string>
+  <key>Label</key>
+  <string>com.nousresearch.hermes</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . "${HERMES_HOME_DIR}/.env"; set +a; exec "${HERMES_BIN}" gateway</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${HERMES_HOME_DIR}/logs/gateway.log</string>
+  <key>StandardErrorPath</key>
+  <string>${HERMES_HOME_DIR}/logs/gateway.log</string>
 </dict>
 </plist>
 PLISTEOF
 
-    launchctl unload "$PLIST_FILE" 2>/dev/null || true
     launchctl load "$PLIST_FILE"
-    log "  LaunchAgent written: $PLIST_FILE"
-    log "  Service loaded"
+    log "  LaunchAgent loaded: $PLIST_FILE"
 fi
 
 echo ""
 
-# ══════════════════════════════════════════════
-# WRITE HERMES-CTL.SH
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# WAIT FOR HERMES-AGENT
+# ════════════════════════════════════════════════════════════════════════════
 
-log "Writing hermes-ctl.sh..."
+log "Waiting for hermes-agent to be ready (up to 60s)..."
+TRIES=0
+HERMES_UP=0
+while [ $TRIES -lt 12 ]; do
+    if curl -sf http://localhost:8642/health > /dev/null 2>&1; then
+        HERMES_UP=1
+        break
+    fi
+    TRIES=$(( TRIES + 1 ))
+    sleep 5
+done
+
+if [ "$HERMES_UP" -eq 1 ]; then
+    log "  hermes-agent is up: http://localhost:8642"
+else
+    warn "  hermes-agent did not respond in 60s — it may still be starting."
+    warn "  Check logs: bash $INSTALL_DIR/scripts/hermes-ctl.sh logs"
+fi
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════
+# WRITE hermes-ctl.sh
+# ════════════════════════════════════════════════════════════════════════════
+
+log "Writing scripts/hermes-ctl.sh..."
 mkdir -p "$INSTALL_DIR/scripts"
 
 cat > "$INSTALL_DIR/scripts/hermes-ctl.sh" << 'CTLEOF'
 #!/bin/bash
-# hermes-ctl.sh — Control the native hermes-agent service
-# Usage: hermes-ctl.sh [start|stop|restart|status|logs]
+# hermes-agent lifecycle management — generated by setup-native.sh
+# Usage: bash scripts/hermes-ctl.sh {start|stop|restart|status|logs}
 set -euo pipefail
 
-PLATFORM="$(uname -s)"
+OS="$(uname -s)"
+CMD="${1:-status}"
 
-case "${1:-status}" in
+case "$CMD" in
     start)
-        if [ "$PLATFORM" = "Darwin" ]; then
-            launchctl start ai.hermes.gateway
+        if [ "$OS" = "Linux" ]; then
+            systemctl --user start hermes-agent
         else
-            systemctl --user start hermes-gateway
+            launchctl start com.nousresearch.hermes
         fi
-        echo "hermes-agent started"
+        echo "hermes-agent started."
         ;;
     stop)
-        if [ "$PLATFORM" = "Darwin" ]; then
-            launchctl stop ai.hermes.gateway
+        if [ "$OS" = "Linux" ]; then
+            systemctl --user stop hermes-agent
         else
-            systemctl --user stop hermes-gateway
+            launchctl stop com.nousresearch.hermes
         fi
-        echo "hermes-agent stopped"
+        echo "hermes-agent stopped."
         ;;
     restart)
-        if [ "$PLATFORM" = "Darwin" ]; then
-            launchctl stop ai.hermes.gateway 2>/dev/null || true
-            sleep 1
-            launchctl start ai.hermes.gateway
+        if [ "$OS" = "Linux" ]; then
+            systemctl --user restart hermes-agent
         else
-            systemctl --user restart hermes-gateway
+            launchctl stop com.nousresearch.hermes 2>/dev/null || true
+            sleep 2
+            launchctl start com.nousresearch.hermes
         fi
-        echo "hermes-agent restarted"
+        echo "hermes-agent restarted."
         ;;
     status)
-        if [ "$PLATFORM" = "Darwin" ]; then
-            launchctl list | grep hermes || echo "hermes-agent: not running"
+        echo "=== Service ==="
+        if [ "$OS" = "Linux" ]; then
+            systemctl --user status hermes-agent --no-pager 2>/dev/null || echo "  Service not found"
         else
-            systemctl --user status hermes-gateway
+            launchctl list com.nousresearch.hermes 2>/dev/null || echo "  Service not running"
+        fi
+        echo ""
+        echo "=== API Health ==="
+        if curl -sf http://localhost:8642/health > /dev/null 2>&1; then
+            echo "  hermes-agent: OK  (http://localhost:8642)"
+        else
+            echo "  hermes-agent: NOT RESPONDING (http://localhost:8642)"
+        fi
+        echo ""
+        echo "=== Ollama ==="
+        if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+            echo "  ollama: OK  (http://localhost:11434)"
+        else
+            echo "  ollama: NOT RESPONDING (http://localhost:11434)"
         fi
         ;;
     logs)
-        if [ "$PLATFORM" = "Darwin" ]; then
-            LOGFILE="$HOME/.hermes/logs/gateway.log"
-            if [ -f "$LOGFILE" ]; then
-                tail -f "$LOGFILE"
-            else
-                echo "No log file found at $LOGFILE"
-            fi
+        if [ "$OS" = "Linux" ]; then
+            journalctl --user -u hermes-agent -f
         else
-            journalctl --user -u hermes-gateway -f
+            tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
         fi
         ;;
     *)
-        echo "Usage: $(basename "$0") [start|stop|restart|status|logs]"
+        echo "Usage: $0 {start|stop|restart|status|logs}"
         exit 1
         ;;
 esac
 CTLEOF
 
 chmod +x "$INSTALL_DIR/scripts/hermes-ctl.sh"
-log "  $INSTALL_DIR/scripts/hermes-ctl.sh"
+log "  Written: $INSTALL_DIR/scripts/hermes-ctl.sh"
 
-echo ""
-
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # DONE
-# ══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 
 echo ""
 echo -e "${BOLD}"
@@ -348,14 +368,13 @@ echo "  ============================================"
 echo -e "${NC}"
 echo "  Ollama:         http://localhost:11434"
 echo "  hermes-agent:   http://localhost:8642"
-echo "  Config:         $HERMES_HOME_DIR/.env"
-echo "  Tier:           $TIER"
+echo "  Agent data:     $HERMES_HOME_DIR/"
 echo ""
-echo "  Useful commands:"
-echo "    ollama pull hermes3:8b"
+echo "  Service management:"
 echo "    bash $INSTALL_DIR/scripts/hermes-ctl.sh status"
+echo "    bash $INSTALL_DIR/scripts/hermes-ctl.sh restart"
 echo "    bash $INSTALL_DIR/scripts/hermes-ctl.sh logs"
 echo ""
 echo -e "  ${BOLD}Next: bash setup-services.sh${NC}"
-echo "  Pick a service tier and start Docker containers."
+echo "  Start Docker services (LiteLLM and optional tier services)."
 echo ""
