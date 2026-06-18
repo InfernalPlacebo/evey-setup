@@ -119,6 +119,7 @@ privacy:
 
 security:
   redact_secrets: true
+  allow_private_urls: false  # set true only if agent needs local network access (see README)
 
 # ── Delegation ───────────────────────────────────────────────
 # Used when the agent delegates tasks to other models

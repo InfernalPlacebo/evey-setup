@@ -344,6 +344,19 @@ Every service port binds to `127.0.0.1`, meaning traffic never leaves your machi
 - LiteLLM enforces a daily budget limit ($10 default) to prevent runaway API costs
 - All docker containers use `json-file` logging with 10MB rotation to prevent disk exhaustion
 
+### Private network access
+
+By default, hermes-agent blocks web tools, browser requests, and vision URL fetches from reaching RFC 1918 (192.168.x.x, 10.x.x.x), loopback, link-local, CGNAT, and cloud-metadata addresses. This prevents prompt-injected URLs from probing your local network.
+
+If your agent legitimately needs to reach local services — a LAN-only Ollama endpoint, an internal wiki, or a self-hosted API — you can lift this restriction in `~/.hermes/config.yaml`:
+
+```yaml
+security:
+  allow_private_urls: true   # default: false
+```
+
+`configure.sh` (Phase 4) will ask whether to enable this during setup. Only enable it on machines where you trust the agent to make arbitrary requests against your local network. Public-facing gateways should leave it off. The Unicode lookalike-domain guard remains active regardless of this setting.
+
 ---
 
 ## Project Structure

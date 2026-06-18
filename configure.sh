@@ -2,7 +2,7 @@
 # ══════════════════════════════════════════════════════════════
 # Hermes Agent Configuration Wizard (Phase 4)
 # Run after setup.sh + docker-compose + install-plugins.sh
-# Configures: brain model, compression, cron jobs, Telegram, SOUL.md
+# Configures: brain model, compression, cron jobs, Telegram, SOUL.md, network access
 # ══════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -255,6 +255,35 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════
+# STEP 6: PRIVATE NETWORK ACCESS
+# ══════════════════════════════════════════════════════════════
+
+log "Step 6: Private Network Access"
+echo ""
+echo "  By default, hermes-agent blocks web tools from reaching local network"
+echo "  addresses (192.168.x.x, 10.x.x.x, localhost, link-local, etc.) to"
+echo "  prevent prompt-injected URLs from probing your LAN."
+echo ""
+echo "  Enable this if your agent needs to reach local services such as:"
+echo "    - A LAN-only Ollama or llama.cpp endpoint"
+echo "    - Internal wikis, self-hosted APIs, or home-network services"
+echo ""
+echo "  Only enable on machines where you trust the agent to make arbitrary"
+echo "  requests against your local network. Leave off for public gateways."
+echo ""
+
+ask "Enable private network access? (y/N)" "N"
+ENABLE_PRIVATE_URLS=0
+if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    ENABLE_PRIVATE_URLS=1
+    warn "  Private network access will be ENABLED — agent can reach local addresses."
+else
+    log "  Private network access: disabled (recommended)."
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════
 # APPLY CONFIGURATION
 # ══════════════════════════════════════════════════════════════
 
@@ -291,6 +320,21 @@ else
     else
         warn "  No config.yaml template found — skipping config generation"
     fi
+fi
+
+# ── Apply allow_private_urls ─────────────────────────────────
+if [ -f "$CONFIG_FILE" ]; then
+    if grep -q "allow_private_urls:" "$CONFIG_FILE"; then
+        if [ "$ENABLE_PRIVATE_URLS" -eq 1 ]; then
+            sed -i "s/allow_private_urls: .*/allow_private_urls: true/" "$CONFIG_FILE"
+        else
+            sed -i "s/allow_private_urls: .*/allow_private_urls: false/" "$CONFIG_FILE"
+        fi
+    elif [ "$ENABLE_PRIVATE_URLS" -eq 1 ]; then
+        # Key absent (old install) — inject it under the security: block
+        sed -i "/^security:/a\\  allow_private_urls: true" "$CONFIG_FILE"
+    fi
+    log "  Private network access: $([ "$ENABLE_PRIVATE_URLS" -eq 1 ] && echo "enabled" || echo "disabled")"
 fi
 
 # ── Write SOUL.md ─────────────────────────────────────────────
@@ -561,6 +605,7 @@ echo "  ============================================"
 echo -e "${NC}"
 echo "  Brain model:     $BRAIN_DESC"
 echo "  Compression:     $COMPRESSION_THRESHOLD"
+echo "  Private network: $([ "${ENABLE_PRIVATE_URLS:-0}" -eq 1 ] && echo "ENABLED" || echo "disabled")"
 echo "  Cron jobs:       $CRON_COUNT selected"
 echo "  Telegram:        ${SETUP_TELEGRAM:-0}"
 echo "  SOUL.md:         ${WRITE_SOUL:-skipped}"
